@@ -1,0 +1,49 @@
+# dsh-task-guard · bundle patch
+#
+# 只插入一个 Host 插件行。想调参数就在 config 里改，改完重启 DSH 生效。
+# 注意：本文件是「安装时」的初始配置；装好之后用户补丁层（profile 的 cordis.patch.yml）
+# 里的同 id 覆盖优先级更高，升级不丢配置。
+- insert:
+    - id: task-guard
+      name: dsh-task-guard
+      config:
+        enabled: true
+        # enforce = 真拦；advisory = 只注入提示不拦（调试用）
+        mode: enforce
+        # 1) 方案准入：未获准许禁止一切变更类工具
+        requirePlan: true
+        # 3) 指令判定：新指令未判定前禁止变更类工具
+        requireClassify: true
+        # 终止措辞（短消息）直接落状态，不等模型判定
+        detectTerminationFromText: true
+        detectApprovalFromText: true
+        # 子会话/子代理：inherit 沿用最近一次人类准许的边界继续干（默认，不会死锁）
+        #   gate   = 子代理也要自己立项（拿不到弹窗，等于必须走文字准许）
+        #   allow  = 子代理不管（硬边界仍然生效）
+        gateSubagents: inherit
+        # 准许框体积控制：问句压成一行，完整方案放 detail，避免卡片撑满界面点不到按钮
+        compactApproval: true
+        maxApprovalSummaryChars: 110
+        approvalDetail: true
+        # 全局硬边界：这些路径前缀任何变更类工具都不许碰
+        protectedPaths:
+          - 'C:\Windows'
+          - 'C:\Program Files'
+          - 'C:\Program Files (x86)'
+          - 'C:\ProgramData'
+          - '/etc'
+          - '/usr'
+          - '/bin'
+          - '/boot'
+          - '/dev'
+        # 全局硬禁工具（留空表示不限；支持 tool* 前缀通配）
+        hardForbiddenTools: []
+        # 方案里没写 allowedSkills 时用的默认技能白名单（留空=不限制 skill）
+        defaultAllowedSkills: []
+        # 动作预算：0=不限；方案里也可单独指定
+        maxActionsPerTask: 0
+        # 习惯库：权重达到该值就把「限制类」习惯自动并入边界
+        habitSuggestMinWeight: 2
+        habitPromoteThreshold: 3
+        # 等人点「准许」的最长等待
+        approvalTimeoutMs: 300000

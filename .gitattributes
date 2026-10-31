@@ -1,0 +1,13 @@
+# 统一换行，避免 Windows 检出后整个仓库显示为改动
+* text=auto eol=lf
+
+# 明确二进制
+*.png binary
+*.jpg binary
+*.ico binary
+
+# 脚本必须保持 LF，否则在 Linux/macOS 上无法执行
+*.sh text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.yml text eol=lf

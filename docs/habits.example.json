@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-31T12:00:00.000Z",
+  "approvals": 4,
+  "rejections": 1,
+  "terminations": 1,
+  "entries": {
+    "forbiddenTool:plugin_manager": {
+      "kind": "forbiddenTool",
+      "value": "plugin_manager",
+      "weight": 4,
+      "firstAt": 1761900000000,
+      "lastAt": 1761980000000
+    },
+    "forbiddenPath:D:\\archive": {
+      "kind": "forbiddenPath",
+      "value": "D:\\archive",
+      "weight": 3,
+      "firstAt": 1761905000000,
+      "lastAt": 1761970000000
+    },
+    "skill:office": {
+      "kind": "skill",
+      "value": "office",
+      "weight": 2,
+      "firstAt": 1761910000000,
+      "lastAt": 1761960000000
+    },
+    "note:改动前先备份原文件": {
+      "kind": "note",
+      "value": "改动前先备份原文件",
+      "weight": 1,
+      "firstAt": 1761920000000,
+      "lastAt": 1761920000000
+    }
+  }
+}

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: selftest (${{ matrix.os }} / node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 语法检查（Host 半边）
+        run: |
+          node --check index.js
+          node --check lib/policy.js
+
+      - name: 纯策略层自测
+        run: node scripts/selftest.mjs
+
+      - name: 包清单完整性
+        run: |
+          node -e "const p=require('fs').readFileSync('package.json','utf8');const j=JSON.parse(p);const fs=require('fs');const miss=j.files.filter(f=>!fs.existsSync(f));if(miss.length){console.error('package.json files 缺文件:',miss);process.exit(1)}if(!j.dsh||!j.dsh.bundle||!j.dsh.bundle.patch){console.error('缺少 dsh.bundle.patch');process.exit(1)}console.log('文件清单完整，入口存在')"
+
+      - name: locale 元数据检查
+        run: |
+          node -e "const fs=require('fs');for(const f of ['locale/en.json','locale/zh.json']){const j=JSON.parse(fs.readFileSync(f,'utf8'));if(!j.meta||!j.meta.title||!j.meta.description){console.error(f+' 缺少 meta.title / meta.description');process.exit(1)}}console.log('locale 元数据齐全')"

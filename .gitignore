@@ -1,0 +1,23 @@
+# 依赖与构建产物
+node_modules/
+dist/
+*.tgz
+
+# 运行时状态（习惯库、日志、快照）
+task-guard/
+.habits.json
+*.log
+logs/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时与备份
+*.bak
+*.bak-*
+tmp/
+.tmp/

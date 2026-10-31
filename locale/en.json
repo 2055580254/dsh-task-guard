@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Task Guard",
+    "description": "Presents a plan for approval before acting, enforces global boundaries and skill allowlists, and classifies each new instruction as terminate or append."
+  }
+}
