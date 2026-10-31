@@ -104,7 +104,15 @@ git push -u origin main && git push origin v1.1.0
 
 ## 3. 本仓库自带的一键脚本
 
-`scripts/publish.ps1`（Windows）与 `scripts/publish.sh`（macOS / Linux / Git Bash）把上面的步骤串起来了，只做本地操作与推送，不做任何清理动作：
+**先改仓库归属**。本仓库里所有地址都用 `GH_USER` 作占位，跑一次就全换掉（`README.md`、`package.json`、`docs/*` 一起改）：
+
+```powershell
+pwsh ./scripts/set-owner.ps1 -User <你的用户名>
+# 想换仓库名：-Repo <名字>
+# 只看会改什么：加 -WhatIf
+```
+
+然后发布。`scripts/publish.ps1`（Windows）与 `scripts/publish.sh`（macOS / Linux / Git Bash）把预检、提交、打标签、推送串起来，只做本地与推送动作，不清理任何文件：
 
 ```powershell
 # Windows，HTTPS + PAT

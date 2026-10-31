@@ -50,7 +50,8 @@
     "docs/habits.example.json",
     "scripts/selftest.mjs",
     "scripts/publish.ps1",
-    "scripts/publish.sh"
+    "scripts/publish.sh",
+    "scripts/set-owner.ps1"
   ],
   "scripts": {
     "selftest": "node scripts/selftest.mjs",

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   把 dsh-task-guard 发布到 GitHub：预检 → 本地提交 → 打标签 → 推送。
 
