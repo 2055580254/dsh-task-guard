@@ -69,7 +69,12 @@ for (const f of ['locale/zh.json', 'locale/en.json']) {
 }
 console.log('清单与元数据完整');
 '@
-    $ManifestCheck | node --input-type=commonjs - ; if ($LASTEXITCODE -ne 0) { Die '清单校验失败' }
+    # 走临时文件而不是 stdin：Windows PowerShell 5.1 往 native 进程的管道会带 BOM，node 会 JSON.parse 失败
+    $CheckFile = Join-Path $env:TEMP 'dsh-task-guard-manifest-check.cjs'
+    [System.IO.File]::WriteAllText($CheckFile, $ManifestCheck, (New-Object System.Text.UTF8Encoding($false)))
+    node $CheckFile; $CheckCode = $LASTEXITCODE
+    Remove-Item $CheckFile -Force -ErrorAction SilentlyContinue
+    if ($CheckCode -ne 0) { Die '清单校验失败' }
     Ok 'package.json / locale 校验通过'
 
     $Version = (Get-Content package.json -Raw | ConvertFrom-Json).version

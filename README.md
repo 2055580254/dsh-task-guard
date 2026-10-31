@@ -1,6 +1,6 @@
 # dsh-task-guard
 
-[![CI](https://github.com/GH_USER/dsh-task-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/GH_USER/dsh-task-guard/actions/workflows/ci.yml)
+[![CI](https://github.com/2055580254/dsh-task-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/2055580254/dsh-task-guard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![DSH bundle](https://img.shields.io/badge/DSH-host--only%20bundle-blue.svg)](docs/install.md)
 ![version](https://img.shields.io/badge/version-1.1.0-informational)
@@ -16,7 +16,7 @@
 **装它**（Host-only bundle，无第三方依赖、无需构建）：
 
 ```
-plugin_manager install_bundle，target = https://codeload.github.com/GH_USER/dsh-task-guard/tar.gz/refs/heads/main
+plugin_manager install_bundle，target = https://codeload.github.com/2055580254/dsh-task-guard/tar.gz/refs/heads/main
 ```
 
 装完看 `application=applied` 且 `warnings` 为空，重启 DSH。细节与另外两条安装通道见 [docs/install.md](docs/install.md)；开发与发布流程见 [docs/publish.md](docs/publish.md)。
@@ -48,14 +48,14 @@ plugin_manager install_bundle，target = https://codeload.github.com/GH_USER/dsh
 
 **通道 1：把 GitHub 地址交给 DSH（最快）**
 
-> 用 plugin_manager install_bundle，target = `https://codeload.github.com/GH_USER/dsh-task-guard/tar.gz/refs/heads/main`
+> 用 plugin_manager install_bundle，target = `https://codeload.github.com/2055580254/dsh-task-guard/tar.gz/refs/heads/main`
 
 想锁定版本就把 `heads/main` 换成 `tags/v1.1.0`。
 
 **通道 2：clone 后装本地目录（要改代码、要看源码选这个）**
 
 ```bash
-git clone https://github.com/GH_USER/dsh-task-guard.git
+git clone https://github.com/2055580254/dsh-task-guard.git
 ```
 
 > 用 plugin_manager install_bundle，target = `<clone 出来的绝对路径>`

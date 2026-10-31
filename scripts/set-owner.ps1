@@ -45,7 +45,9 @@ foreach ($rel in $Targets) {
     $new = $new -replace 'GH_USER', $User
 
     if ($PSCmdlet.ShouldProcess($rel, "替换 GH_USER → $User")) {
-        Set-Content $path -Value $new -NoNewline -Encoding utf8
+        # 必须写无 BOM 的 UTF-8：PS 5.1 的 -Encoding utf8 会带 BOM，node 读 package.json 会 JSON.parse 失败
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($path, $new, $utf8NoBom)
         $changed += $rel
     }
 }

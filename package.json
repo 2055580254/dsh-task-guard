@@ -16,13 +16,13 @@
   ],
   "license": "MIT",
   "author": "YG",
-  "homepage": "https://github.com/GH_USER/dsh-task-guard#readme",
+  "homepage": "https://github.com/2055580254/dsh-task-guard#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GH_USER/dsh-task-guard.git"
+    "url": "git+https://github.com/2055580254/dsh-task-guard.git"
   },
   "bugs": {
-    "url": "https://github.com/GH_USER/dsh-task-guard/issues"
+    "url": "https://github.com/2055580254/dsh-task-guard/issues"
   },
   "engines": {
     "node": ">=20"
@@ -56,7 +56,7 @@
   "scripts": {
     "selftest": "node scripts/selftest.mjs",
     "check": "node --check index.js && node --check lib/policy.js && node scripts/selftest.mjs",
-    "publish:dry": "pwsh -File scripts/publish.ps1 -User GH_USER -DryRun"
+    "publish:dry": "pwsh -File scripts/publish.ps1 -User 2055580254 -DryRun"
   },
   "dsh": {
     "bundle": {

@@ -104,7 +104,7 @@ git push -u origin main && git push origin v1.1.0
 
 ## 3. 本仓库自带的一键脚本
 
-**先改仓库归属**。本仓库里所有地址都用 `GH_USER` 作占位，跑一次就全换掉（`README.md`、`package.json`、`docs/*` 一起改）：
+**先改仓库归属**。本仓库里所有地址都用 `2055580254` 作占位，跑一次就全换掉（`README.md`、`package.json`、`docs/*` 一起改）：
 
 ```powershell
 pwsh ./scripts/set-owner.ps1 -User <你的用户名>
