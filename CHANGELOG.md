@@ -2,6 +2,26 @@
 
 遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.2.0 — 2026-11-04
+
+### 新增：分步执行（计划表 · progress · 每步授权）
+- 方案里的 `steps` 在获准后展开成**可跟踪的计划表**：`state.steps[]`（每步 `{index, text, status, startedAt, doneAt, summary}`）、`stepIndex`、`stepApproved`。
+- **新工具 `task_step`**：`progress`（进度条＋计划表＋每步摘要）／`complete`（本步收尾并请示下一步）／`start`（请求或确认当前步授权）／`skip`（跳过）／`reset`（退回第 1 步）。已加入 `PROTOCOL_TOOLS`，否则等待期会自锁。
+- **新阶段 `awaiting_step`**（`PHASE.STEP_AWAITING`）：一步收尾后进入「等待授权下一步」，闸门在这一阶段拒绝一切变更类工具（code `step-approval`），只放行 `PROTOCOL_TOOLS` 与只读工具；从 `no-approval` 判定里显式豁免（它算「已立项已准许，只是下一步未授权」）。
+- **第一步随方案准许一起授权**，之后每步都要重新授权；`advanceStep` 收尾后自动清空 `stepApproved`。
+- **`renderProgress(state)`**：`进度 2/6 ▓▓▓▓░░░░░░` ＋ `✅/⏭/▶/⏸` 四种标记 ＋ 等授权提示；接入 `task_step`、`task_guard_status(action=steps)`、`/taskguard step`、以及每轮注入的动态状态 context。
+- `task_instruction`：`append` 现在也接受 `awaiting_step` 阶段（在等授权时提追加要求不必重新立项）；`new_task` 清理计划表；`resume` 恢复时保留当前步位置。
+- `/taskguard next`：人肉授权当前这一步（弹卡点不到/超时时的救命路径，写 `history` 与 `step-approve`）。
+- 文字降级路径：`awaiting_step` 阶段用户回「继续/下一步」即视为授权（`inbox/inserted` 里判定，仍受 `answerGraceMs` 防回灌保护）。
+- `skip` 不连环弹卡：跳过之后只把下一步写给用户，避免一次点错连弹五张。
+- 配置：`stepGating`（默认 `true`；`false` 退回 1.1.0 的自由推进，`complete` 只记账）、`stepApprovalMode`（`ask` 自动弹卡 / `manual` 只文字请示）、`maxSteps`（0=不限）。
+
+### 修复
+- `decideGate` 的 `no-approval` 分支不再误拦 `awaiting_step`（原先会被当成「未立项」）。
+
+### 自测
+- 新增 10 项断言（initSteps、advanceStep 的 done/skip/finished、stepStats、renderProgress、awaiting_step 闸门矩阵、stepGating=false、配置默认、renderState 进度行、task_step 属协议工具），合计 **47 项全部通过**。
+
 ## 1.1.0 — 2026-10-31
 
 ### 修复（界面）

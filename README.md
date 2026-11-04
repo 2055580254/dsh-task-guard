@@ -3,15 +3,16 @@
 [![CI](https://github.com/2055580254/dsh-task-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/2055580254/dsh-task-guard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![DSH bundle](https://img.shields.io/badge/DSH-host--only%20bundle-blue.svg)](docs/install.md)
-![version](https://img.shields.io/badge/version-1.1.0-informational)
+![version](https://img.shields.io/badge/version-1.2.0-informational)
 
-装在你自己的 DeepSeek Harness 上的一道**任务闸门**。三句话说清它干什么：
+装在你自己的 DeepSeek Harness 上的一道**任务闸门**。四句话说清它干什么：
 
 1. **先给方案，得到准许才动手**。没走 `task_plan` 并拿到 `approved`，`write / edit / pwsh / job_kill / plugin_manager` 这类变更类工具一律被拒（只读工具不受影响）。
-2. **动手前先划边界**。全局硬边界（受保护路径、危险命令、硬禁工具）+ 本次任务的允许 skill / 允许工具 / 禁路径 / 动作预算，四层叠加，方案只能收紧不能放宽；你的使用习惯会被记进习惯库，重复出现后自动并入边界。
-3. **任务中来了新指令，先判定再动手**。是「终止」就当场收尾；是「追加」就接着原任务干，不必重新立项。判定之前变更类工具被拦住。
+2. **一步一授权（1.2.0）**。方案里的 `steps` 会变成计划表，一次只做当前这一步；做完调 `task_step(action=complete)` 收尾，插件立刻弹「继续下一步 / 跳过这步 / 结束任务」的卡，你点了它才动下一步。`task_step(action=progress)` 随时看进度条、已完成的每步摘要。
+3. **动手前先划边界**。全局硬边界（受保护路径、危险命令、硬禁工具）+ 本次任务的允许 skill / 允许工具 / 禁路径 / 动作预算，四层叠加，方案只能收紧不能放宽；你的使用习惯会被记进习惯库，重复出现后自动并入边界。
+4. **任务中来了新指令，先判定再动手**。是「终止」就当场收尾；是「追加」就接着原任务干，不必重新立项。判定之前变更类工具被拦住。
 
-一句话工作流：**探查（只读自由）→ `task_plan` → 用户点准许 → 执行 → 新消息先 `task_instruction`**。
+一句话工作流：**探查（只读自由）→ `task_plan` → 用户点准许 → 只做第 1 步 → `task_step(complete)` → 用户授权 → 第 2 步 …… → 新消息先 `task_instruction`**。
 
 **装它**（Host-only bundle，无第三方依赖、无需构建）：
 
@@ -20,6 +21,18 @@ plugin_manager install_bundle，target = https://codeload.github.com/2055580254/
 ```
 
 装完看 `application=applied` 且 `warnings` 为空，重启 DSH。细节与另外两条安装通道见 [docs/install.md](docs/install.md)；开发与发布流程见 [docs/publish.md](docs/publish.md)。
+
+## v1.2.0 改了什么：分步执行 + progress + 每步授权
+
+以前拿到准许就像开了总闸，模型可以一口气把六步全干完。现在方案里的 `steps` 是可跟踪的计划表：
+
+- **新工具 `task_step`**：`progress`（进度条＋计划表＋每步摘要）／`complete`（本步做完，写 summary，随即请示下一步）／`start`（请求或确认当前步授权）／`skip`（跳过这步）／`reset`（计划表退回第 1 步）。
+- **新阶段 `awaiting_step`**：一步收尾后立刻进入「等待授权下一步」，此时所有变更类工具都被闸门拒绝，必须先 `task_step(action=start)` 拿到准许。第一步随方案准许一起授权，之后每步都要重新点。
+- **progress 三处可见**：`task_step(action=progress)`、`/taskguard step`、以及系统提示里自动注入的 `进度 3/6 ▓▓▓▓▓░░░░░` 行——模型随时知道自己做到哪，不会跳步也不会重复做。
+- **授权卡同样压成一行**：`第 3/6 步｜改造 index.js`，计划表与上一步摘要放 `detail`。
+- **文字降级路径**：弹不出卡（子会话/非交互）时，用户回一句「继续」也会被识别为该步授权（`answerGraceMs` 内的卡片答复不会被误判成新指令）。
+- **跳过不连环弹卡**：`skip` 之后只把下一步写给你，避免一次点错连弹五张。
+- 新配置：`stepGating`（默认 `true`，关掉即退回 1.1.0 的自由推进）、`stepApprovalMode`（`ask` 弹卡 / `manual` 只文字请示）、`maxSteps`（计划表步数上限，0=不限）。
 
 ## v1.1.0 改了什么
 
@@ -50,7 +63,7 @@ plugin_manager install_bundle，target = https://codeload.github.com/2055580254/
 
 > 用 plugin_manager install_bundle，target = `https://codeload.github.com/2055580254/dsh-task-guard/tar.gz/refs/heads/main`
 
-想锁定版本就把 `heads/main` 换成 `tags/v1.1.0`。
+想锁定版本就把 `heads/main` 换成 `tags/v1.2.0`。
 
 **通道 2：clone 后装本地目录（要改代码、要看源码选这个）**
 
@@ -89,29 +102,49 @@ node --check index.js            # 期望：无输出
 
 ### 2.1 开一个新任务
 
-你随便说要做的事，DSH 会先做只读探查，然后弹一张「方案准许」卡：
+你随便说要做的事，DSH 会先做只读探查，然后弹一张「方案准许」卡（问句只有一行，完整方案在卡片的详情折叠区里）：
 
 ```
 方案准许
-dsh-task-guard 申请执行以下方案，请选择：
-
-目标：把 README 补成完整使用手册
-步骤：1. 读现有文档  2. 补齐配置表  3. 写故障排查
-边界：skill[不限] 工具[不限] 路径禁[C:\Windows,…]
-验收：README 含安装/使用/排错三段
+方案#3｜把 README 补成完整使用手册（3 步 · 预算 40）
+  [准许执行]  [修改方案]  [取消任务]
 ```
 
 三个选项：
 
 | 你点 | 效果 |
 | --- | --- |
-| **准许执行** | 进入 `approved`，闸门放行变更类工具 |
+| **准许执行** | 进入 `approved`，闸门放行变更类工具——**只放行第 1 步**，做完还会回来问 |
 | **修改方案** | 保持等待，DSH 会改方案后重新提交（`planRev+1`） |
 | **取消任务** | 进入 `terminated`，DSH 只做收尾说明 |
 
 你还可以在选项里写自定义文字，比如「步骤 2 换成先备份」，同样算「修改方案」。
 
-### 2.2 任务进行中又发了消息
+### 2.2 一步一授权怎么走（1.2.0）
+
+准许之后不是「全放行」，而是**只放行当前这一步**：
+
+```
+你：把这套文档补齐
+DSH：task_plan(3 步) → 你点「准许执行」
+DSH：（只做第 1 步：读现有文档）
+DSH：task_step(complete, summary="读完 4 个文档，缺配置表和排错") 
+     ↓ 插件自动弹第二张卡
+     [下一步授权] 第 2/3 步｜补齐配置表
+       [继续下一步]  [跳过这步]  [结束任务]
+你：点「继续下一步」
+DSH：（只做第 2 步）→ task_step(complete) → 弹第 3 步的卡 ……
+```
+
+- **进度随时可看**：`task_step(action=progress)` 或 `/taskguard step`，输出像
+  `进度 2/3 ▓▓▓▓▓▓▓░░░` ＋ `✅ 1. 读现有文档 — 读完 4 个文档` ＋ `▶ 3. 写故障排查`。
+  系统提示里也会自动注入这一行，模型不会忘。
+- **等待期是硬拦**：阶段是 `awaiting_step` 时，`write / edit / pwsh / plugin_manager` 全部被拒（只读工具照常），理由写着 `step-approval`。
+- **弹不出卡也能授权**：子会话/非交互场景，你回一句「继续」「下一步」即视为授权（`task_step(action=start)` 会记录）。
+- **想一口气干完**：给配置加 `stepGating: false`，退回 1.1.0 的自由推进，progress 仍然记录。
+- **跳过**：点「跳过这步」或 `task_step(action=skip)`；跳过不会连环弹卡，只会把下一步写给你。
+
+### 2.3 任务进行中又发了消息
 
 这是需求 3 的落点。DSH 的下一个动作必须是 `task_instruction`，四选一：
 
@@ -124,13 +157,15 @@ dsh-task-guard 申请执行以下方案，请选择：
 
 **判定之前不许动手**：只要检测到新指令而 `task_instruction` 还没调，变更类工具返回拒绝，理由里写着 `pending-instruction`。
 
-### 2.3 要不要用斜杠命令
+### 2.4 要不要用斜杠命令
 
 模型侧全自动，命令是给你手动兜底和查看用的：
 
 ```
 /taskguard             # 等同 show：当前阶段、方案、边界、预算消耗
-/taskguard approve     # 手动准许（弹窗失败时的救命路径）
+/taskguard step        # 计划表进度（进度条 + 每步状态与摘要）
+/taskguard next        # 授权当前这一步（弹卡点不到/超时时的救命路径）
+/taskguard approve     # 手动准许整份方案（弹窗失败时的救命路径）
 /taskguard deny        # 否决并终止
 /taskguard reset       # 清空本会话状态，回到 idle
 /taskguard habits      # 看习惯库
@@ -176,6 +211,18 @@ dsh-task-guard 申请执行以下方案，请选择：
 | `rejected` | 你取消 | 停手，简短说明现状 |
 | `manual` | 弹不出窗（子会话 / 超时 / 非交互） | 把方案要点写给你，等你回「准许」，或你敲 `/taskguard approve` |
 | `invalid` | 方案本身不成立（缺 goal/steps，或想放宽硬边界） | 修好再提交 |
+
+### `task_step` —— 分步执行与进度（1.2.0）
+
+| action | 作用 | 返回 |
+| --- | --- | --- |
+| `progress` | 看计划表 | `progress`（进度条文本）、`stats`（total/done/skipped/settled）、`current`、`steps[]` |
+| `complete` | 当前步做完 | `status=approved`（下一步已获授权）／`awaiting_approval`（弹不出卡，等文字准许）／`all-done` |
+| `start` | 请求或确认当前步授权 | `continuing`（已授权）／`approved`（刚弹卡点了继续）／`awaiting_approval` |
+| `skip` | 跳过当前步 | `awaiting_approval` + 下一步提示 |
+| `reset` | 计划表退回第 1 步 | `ok` |
+
+`complete` 必须带 `summary`（本步实际做了什么、产出在哪），它会进 progress 面板和下一张授权卡的详情，也是你回看「这步到底做成了没有」的依据。
 
 ### `task_instruction` —— 判定新指令
 

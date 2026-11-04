@@ -1,9 +1,9 @@
 {
   "name": "dsh-task-guard",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
-  "description": "任务闸门：方案先准许再动手 + 全局边界与 skill 限制 + 新指令终止/追加判定",
+  "description": "任务闸门：方案先准许再动手 + 分步执行（每步再授权）+ 全局边界与 skill 限制 + 新指令终止/追加判定",
   "keywords": [
     "dsh",
     "deepseek-harness",

@@ -13,6 +13,8 @@
         mode: enforce
         requirePlan: true
         requireClassify: true
+        stepGating: true
+        stepApprovalMode: ask
 ```
 
 ---
@@ -90,7 +92,7 @@ format /fs
 | --- | --- | --- | --- |
 | `readOnlyTools` | string[] | 内置一批 | 只读工具名清单，永远放行且不消耗预算。 |
 | `extraReadOnlyTools` | string[] | `[]` | 追加只读工具（MCP 只读查询可以加这里）。 |
-| `skipTools` | string[] | 协议三件套 + `ask_user_question` `present` | 完全跳过闸门。**必须包含 `task_plan` / `task_instruction` / `task_guard_status`，否则自锁。** |
+| `skipTools` | string[] | 协议四件套 + `ask_user_question` `present` | 完全跳过闸门。**必须包含 `task_plan` / `task_instruction` / `task_step` / `task_guard_status`，否则自锁。** |
 | `extraSkipTools` | string[] | `[]` | 追加跳过项。 |
 
 内置 `readOnlyTools`（节选）：`read` `glob` `grep` `web_search` `web_fetch` `research` `cache_search` `platform_search` `domain_search` `advanced_search` `multi_search` `weather` `free_search_test` `skill` `load_workspace_dependencies` `working_directory` `list_agents` `job_list` `job_output` `schedule_list` `schedule_delete` `list_mcp_resources` `list_mcp_resource_templates` `read_mcp_resource` `cordis_inspect_list` `cordis_inspect_query` `todo_write` `ask_user_question` `present`。
@@ -105,6 +107,21 @@ format /fs
 | `habitPath` | string | 见下 | 习惯库路径。默认 `%DSH_PROFILE_DIR%\task-guard\habits.json`，无该变量时 `~/.dsh/task-guard/habits.json`。 |
 | `habitSuggestMinWeight` | number | `2` | 权重达此值 → 作为「习惯补充」写进系统提示。 |
 | `habitPromoteThreshold` | number | `3` | 权重达此值 → `forbiddenTools` / `forbiddenPaths` 自动并入生效边界。 |
+
+## 分步执行（v1.2.0）
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `stepGating` | bool | `true` | 一步一授权。`true`：`task_step(action=complete)` 后阶段进入 `awaiting_step`，变更类工具被拒（`TASK_GUARD_STEP_APPROVAL`），必须先 `task_step(action=start)`。`false`：退回 1.1.0 的自由推进，`complete` 只记账、不拦。 |
+| `stepApprovalMode` | `ask` \| `manual` | `ask` | `ask`：每步收尾后自动弹「继续下一步 / 跳过这步 / 结束任务」卡。`manual`：不弹卡，只把下一步写给用户，等其回复「继续」再 `task_step(action=start)`（适合不想被卡片打断的长任务）。 |
+| `maxSteps` | number | `0` | 计划表步数上限，0=不限。方案超限时 `task_plan` 报 `invalid`。 |
+
+行为要点：
+
+- 第一步随方案准许一起授权；`advanceStep` 收尾后 `stepApproved` 立刻清空，所以「每一步都要再点一次」是硬保证。
+- `awaiting_step` 阶段只放行 `PROTOCOL_TOOLS`（`task_plan` / `task_instruction` / `task_step` / `task_guard_status`）与只读工具；`task_step` 漏出协议清单会自锁。
+- 弹不出卡（子会话/非交互）时，你在 `answerGraceMs` 之外回一句「继续」「下一步」，`agent/inbox/inserted` 会把它识别为该步授权（不会误判成新指令）。
+- `stepApprovalMode=manual` 与 `approvalTimeoutMs` 无关：manual 根本不发卡，不存在超时。
 
 ## 准许框体积（v1.1.0）
 

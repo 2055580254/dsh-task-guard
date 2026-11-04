@@ -10,17 +10,22 @@ import assert from 'node:assert/strict'
 
 import {
   PHASE,
+  STEP_STATUS,
   DEFAULT_PROTECTED_PATHS,
+  advanceStep,
   applyProfile,
   boundaryConflicts,
   boundaryVerdict,
   collectArgStrings,
+  currentStep,
   decideGate,
   emptyHabits,
   emptyState,
   habitHints,
   habitList,
   habitPromotions,
+  hasNextStep,
+  initSteps,
   learnFromApproval,
   looksLikeApproval,
   looksLikeTermination,
@@ -30,7 +35,9 @@ import {
   normalizeInstruction,
   normalizePlan,
   renderHabits,
+  renderProgress,
   renderState,
+  stepStats,
   subagentBoundaries,
 } from '../lib/policy.js'
 
@@ -470,6 +477,130 @@ test('compress 等上下文工具在只读清单里', () => {
   for (const name of ['compress', 'decompress', 'acp_status', 'search_context']) {
     assert.equal(decideGate({ name, args: {}, state: emptyState('t'), config: cfg }).code, 'read-only', name)
   }
+})
+
+/* ------------------------------------------------------------------ 1.2.0 分步执行 ---- */
+
+test('initSteps：第一步 active，其余 pending', () => {
+  const steps = initSteps({ steps: ['a', 'b', 'c'] })
+  assert.equal(steps.length, 3)
+  assert.equal(steps[0].status, STEP_STATUS.ACTIVE)
+  assert.equal(steps[1].status, STEP_STATUS.PENDING)
+  assert.equal(steps[2].status, STEP_STATUS.PENDING)
+  assert.deepEqual(initSteps({}), [])
+})
+
+test('advanceStep：收尾一步后游标前移、下一步变 active、授权被清空', () => {
+  const st = emptyState('t')
+  st.plan = { steps: ['一', '二', '三'] }
+  st.steps = initSteps(st.plan)
+  st.stepIndex = 0
+  st.stepApproved = true
+  assert.equal(currentStep(st).text, '一')
+  const r = advanceStep(st, STEP_STATUS.DONE, '做完了')
+  assert.equal(st.stepIndex, 1)
+  assert.equal(st.steps[0].status, STEP_STATUS.DONE)
+  assert.equal(st.steps[0].summary, '做完了')
+  assert.equal(r.nextStep.text, '二')
+  assert.equal(st.steps[1].status, STEP_STATUS.ACTIVE)
+  assert.equal(st.stepApproved, false, '每步都要重新授权')
+})
+
+test('advanceStep：最后一步收尾后 finished=true，hasNextStep=false', () => {
+  const st = emptyState('t')
+  st.plan = { steps: ['一', '二'] }
+  st.steps = initSteps(st.plan)
+  st.stepIndex = 0
+  advanceStep(st, STEP_STATUS.DONE, '')
+  assert.equal(hasNextStep(st), true)
+  const r = advanceStep(st, STEP_STATUS.DONE, '')
+  assert.equal(r.finished, true)
+  assert.equal(r.nextStep, null)
+  assert.equal(hasNextStep(st), false)
+  assert.deepEqual(stepStats(st), { total: 2, done: 2, skipped: 0, settled: 2, remaining: 0 })
+})
+
+test('advanceStep：skip 不计入 done 但计入 settled', () => {
+  const st = emptyState('t')
+  st.plan = { steps: ['一', '二'] }
+  st.steps = initSteps(st.plan)
+  advanceStep(st, STEP_STATUS.SKIPPED, '跳过')
+  const stats = stepStats(st)
+  assert.equal(stats.done, 0)
+  assert.equal(stats.skipped, 1)
+  assert.equal(stats.settled, 1)
+})
+
+test('renderProgress：进度条 + ✅/⏭/▶ 标记 + 等授权提示', () => {
+  const st = emptyState('t')
+  st.plan = { steps: ['读代码', '改 policy', '改 index'] }
+  st.steps = initSteps(st.plan)
+  advanceStep(st, STEP_STATUS.DONE, '读完')
+  let text = renderProgress(st)
+  assert.match(text, /进度 1\/3/)
+  assert.match(text, /✅ 1\. 读代码 — 读完/)
+  assert.match(text, /▶ 2\. 改 policy/)
+  st.phase = PHASE.STEP_AWAITING
+  text = renderProgress(st)
+  assert.match(text, /⏸ 等授权：第 2 步/)
+  assert.equal(renderProgress(emptyState('t')), '')
+})
+
+test('decideGate：awaiting_step 阶段拦变更类工具，放行 task_step 与只读', () => {
+  const cfg = normalizeConfig()
+  const st = emptyState('t')
+  st.plan = { steps: ['一', '二'] }
+  st.steps = initSteps(st.plan)
+  st.stepIndex = 1
+  st.phase = PHASE.STEP_AWAITING
+  const denied = decideGate({ name: 'write', args: { file_path: 'E:\\x.txt', content: 'y' }, state: st, config: cfg })
+  assert.equal(denied.kind, 'deny')
+  assert.equal(denied.code, 'step-approval')
+  assert.match(denied.reason, /第 2 步/)
+  assert.equal(decideGate({ name: 'task_step', args: { action: 'start' }, state: st, config: cfg }).code, 'protocol-tool')
+  assert.equal(decideGate({ name: 'read', args: { file_path: 'E:\\x.txt' }, state: st, config: cfg }).code, 'read-only')
+})
+
+test('decideGate：stepGating=false 时 awaiting_step 不再拦', () => {
+  const cfg = normalizeConfig({ stepGating: false })
+  const st = emptyState('t')
+  st.plan = { steps: ['一'] }
+  st.steps = initSteps(st.plan)
+  st.phase = PHASE.STEP_AWAITING
+  assert.equal(decideGate({ name: 'write', args: { file_path: 'E:\\x.txt', content: 'y' }, state: st, config: cfg }).kind, 'allow')
+})
+
+test('配置默认：stepGating=true / stepApprovalMode=ask / maxSteps=0', () => {
+  const cfg = normalizeConfig()
+  assert.equal(cfg.stepGating, true)
+  assert.equal(cfg.stepApprovalMode, 'ask')
+  assert.equal(cfg.maxSteps, 0)
+  assert.equal(normalizeConfig({ stepGating: false }).stepGating, false)
+  assert.equal(normalizeConfig({ stepApprovalMode: 'manual' }).stepApprovalMode, 'manual')
+  assert.equal(normalizeConfig({ stepApprovalMode: '鬼话' }).stepApprovalMode, 'ask')
+})
+
+test('renderState：带计划表时输出进度行，等授权时给出 task_step 指引', () => {
+  const st = emptyState('t')
+  st.plan = { goal: 'g', steps: ['一', '二'] }
+  st.steps = initSteps(st.plan)
+  st.phase = PHASE.EXECUTING
+  st.stepApproved = true
+  let text = renderState(st)
+  assert.match(text, /进度 0\/2/)
+  assert.match(text, /当前第 1 步/)
+  st.phase = PHASE.STEP_AWAITING
+  st.stepApproved = false
+  text = renderState(st)
+  assert.match(text, /等授权/)
+  assert.match(text, /task_step\(action=start\)/)
+})
+
+test('task_step 属于协议工具且不在只读清单里（否则等待期能把闸门撑开）', () => {
+  const cfg = normalizeConfig()
+  const st = emptyState('t')
+  st.phase = PHASE.IDLE
+  assert.equal(decideGate({ name: 'task_step', args: {}, state: st, config: cfg }).code, 'protocol-tool')
 })
 
 test('boundaryVerdict 独立可用（子代理与人类共用）', () => {

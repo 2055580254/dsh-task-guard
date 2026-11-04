@@ -20,16 +20,21 @@ import os from 'node:os'
 import {
   PHASE,
   PROTOCOL_TOOLS,
+  STEP_STATUS,
+  advanceStep,
   applyProfile,
   boundaryConflicts,
   clip,
+  currentStep,
   decideGate,
   emptyHabits,
   emptyState,
   habitHints,
   habitList,
   habitPromotions,
+  hasNextStep,
   INSTRUCTION_KINDS,
+  initSteps,
   learnFromApproval,
   learnFromRejection,
   learnFromTermination,
@@ -42,7 +47,9 @@ import {
   normalizePlan,
   readOnlySet,
   renderHabits,
+  renderProgress,
   renderState,
+  stepStats,
 } from './lib/policy.js'
 
 /* ------------------------------------------------------------------ 工具函数 ---- */
@@ -354,6 +361,17 @@ export function apply(root, rawConfig) {
           return
         }
 
+        // 分步授权的文字降级路径：弹不出卡时，用户打字「继续/下一步」即授权该步
+        if (state.phase === PHASE.STEP_AWAITING && looksLikeApproval(text, cfg)) {
+          state.phase = PHASE.EXECUTING
+          state.stepApproved = true
+          state.stepGateAt = null
+          state.pendingInstruction = false
+          state.history.push({ kind: 'step-approve', by: 'text', step: state.stepIndex, text: clip(text, 200), at: Date.now() })
+          log('info', `收到文字授权，继续第 ${state.stepIndex + 1} 步`)
+          return
+        }
+
         state.pendingInstruction = true
         log('info', `检测到新指令，等待 task_instruction 判定：「${clip(text, 60)}」`)
       } catch (error) {
@@ -546,15 +564,24 @@ export function apply(root, rawConfig) {
         state.phase = PHASE.APPROVED
         state.approvedAt = Date.now()
         store.lastApproved = merged
+        // 分步计划表：方案里的 steps 落成可跟踪的计划，第一步随方案准许一起授权
+        state.steps = initSteps(plan)
+        state.stepIndex = 0
+        state.stepApproved = state.steps.length > 0
+        state.stepGateAt = null
         state.history.push({ kind: 'approve', planId: state.planId, at: Date.now() })
         await habits.update(learnFromApproval(habits.data, plan)).catch(() => {})
-        log('info', `方案#${state.planId} 获准：${clip(plan.goal, 60)}`)
+        log('info', `方案#${state.planId} 获准：${clip(plan.goal, 60)}（${state.steps.length} 步）`)
         return {
           status: 'approved',
           planId: state.planId,
           boundaries: merged,
           learnedHints: hints,
-          hint: '准许已生效：按 steps 执行。超出方案范围的动作要先重提 task_plan；收到新用户指令时先调用 task_instruction 判定。',
+          steps: state.steps.map((s) => ({ index: s.index + 1, text: s.text, status: s.status })),
+          progress: renderProgress(state),
+          hint: cfg.stepGating
+            ? '准许已生效。按 steps 一步一步做：只做第 1 步，做完调用 task_step(action=complete, summary=…) 标记收尾，再等我授权下一步；不要在一步里把后面几步一起做完。'
+            : '准许已生效：按 steps 执行。超出方案范围的动作要先重提 task_plan；收到新用户指令时先调用 task_instruction 判定。',
         }
       }
       if (verdict.kind === 'cancelled') {
@@ -602,6 +629,319 @@ export function apply(root, rawConfig) {
         boundaries: merged,
         hint: '用户要求修改：先改方案再重新调用 task_plan（会重新征求准许）。不要执行变更类工具。',
       }
+    },
+  }
+
+  /* ---------------- 分步授权（1.2.0）：每一步做完再要一次准许 ---------------- */
+
+  const stepMeta = (state) => {
+    const cur = currentStep(state)
+    const stats = stepStats(state)
+    return { cur, stats }
+  }
+
+  /**
+   * 弹「授权下一步」卡。
+   * 与 askApproval 一样：问句压成一行（1.0.0 的卡片撑满界面 P0 教训），细节进 detail。
+   */
+  const askStep = async (exec, key, state) => {
+    const uq = root.get?.('userQuestions') ?? (typeof root.get === 'function' ? root.get('userQuestions') : undefined)
+    if (!uq || typeof uq.ask !== 'function') return { kind: 'unavailable' }
+
+    const { cur, stats } = stepMeta(state)
+    if (!cur) return { kind: 'continue' }
+
+    const questionText = cfg.compactApproval
+      ? `第 ${cur.index + 1}/${stats.total} 步｜${clip(cur.text, cfg.maxApprovalSummaryChars)}`
+      : `下一步做这个，继续？\n\n${cur.index + 1}. ${cur.text}`
+
+    const prev = stats.total > 0
+      ? (state.steps[cur.index - 1] ?? null)
+      : null
+    const detailText = cfg.approvalDetail
+      ? [
+        renderProgress(state),
+        prev ? `上一步完成情况：${prev.summary || '（未写 summary）'}` : '',
+        '选「继续」我就只做这一步，做完再回来要授权。',
+      ].filter(Boolean).join('\n')
+      : ''
+
+    store.asking.add(key)
+    try {
+      const question = {
+        id: 'step',
+        header: '下一步授权',
+        question: questionText,
+        options: [
+          { label: '继续下一步', description: '只做这一步' },
+          { label: '跳过这步', description: '直接跳下一个' },
+          { label: '结束任务', description: '现在就收工' },
+        ],
+      }
+      if (detailText) question.detail = detailText
+      const request = { agent: exec?.agent, questions: [question] }
+      if (exec?.signal) request.signal = exec.signal
+      const answer = await withTimeout(uq.ask(request), cfg.approvalTimeoutMs, exec?.signal)
+      const picked = Array.isArray(answer?.answers) ? answer.answers.find((a) => a && a.id === 'step') : undefined
+      const selected = String(picked?.selected?.[0] ?? '')
+      const custom = String(picked?.custom ?? '')
+      if (selected.includes('跳过')) return { kind: 'skip', message: custom }
+      if (selected.includes('结束') || selected.includes('收工')) return { kind: 'stop', message: custom }
+      if (selected.includes('继续') || /^(ok|yes|go|next)/i.test(custom)) return { kind: 'continue', message: custom }
+      return { kind: 'continue', message: selected || custom }
+    } catch (error) {
+      const message = String(error?.message ?? error)
+      if (error?.name === 'AbortError') return { kind: 'stop', message: '调用被取消' }
+      if (error?.code === 'TIMEOUT') return { kind: 'timeout' }
+      if (/DELEGATED_CALLER|CALLER_NOT_LIVE|not live|no live/i.test(message)) return { kind: 'unavailable' }
+      log('warn', `询问下一步授权失败：${message}`)
+      return { kind: 'unavailable' }
+    } finally {
+      store.asking.delete(key)
+      store.answeredAt.set(key, Date.now())
+    }
+  }
+
+  /** 请示当前步；返回给模型的 status 对象。 */
+  const requestStep = async (exec, key, state) => {
+    const { cur, stats } = stepMeta(state)
+    const progress = renderProgress(state)
+    if (!cur) {
+      state.phase = PHASE.APPROVED
+      state.stepApproved = false
+      return { status: 'all-done', progress, hint: '没有剩余步骤：向用户汇报成果与验收情况；要改或加东西就重新 task_plan。' }
+    }
+
+    state.phase = PHASE.STEP_AWAITING
+    state.stepApproved = false
+    if (!state.stepGateAt) state.stepGateAt = Date.now()
+    const next = { index: cur.index + 1, total: stats.total, text: cur.text }
+
+    if (cfg.stepApprovalMode !== 'ask') {
+      return {
+        status: 'awaiting_approval',
+        progress,
+        next,
+        hint: `下一步等授权：把「第 ${next.index}/${next.total} 步：${clip(cur.text, 60)}」告诉用户，得到明确「继续」后调用 task_step(action=start)。`,
+      }
+    }
+
+    const verdict = await askStep(exec, key, state)
+    if (verdict.kind === 'continue') {
+      state.phase = PHASE.EXECUTING
+      state.stepApproved = true
+      if (cur.status !== STEP_STATUS.ACTIVE) cur.status = STEP_STATUS.ACTIVE
+      if (!cur.startedAt) cur.startedAt = Date.now()
+      state.stepGateAt = null
+      state.history.push({ kind: 'step-approve', by: 'question', step: state.stepIndex, at: Date.now() })
+      return {
+        status: 'approved',
+        progress: renderProgress(state),
+        next,
+        hint: `用户准许了第 ${next.index} 步：只做这一步，做完调用 task_step(action=complete, summary=…)，不要顺手做后面几步。`,
+      }
+    }
+    if (verdict.kind === 'skip') {
+      advanceStep(state, STEP_STATUS.SKIPPED, '用户选择跳过')
+      state.history.push({ kind: 'step-skip', by: 'question', step: cur.index, at: Date.now() })
+      return requestStep(exec, key, state)
+    }
+    if (verdict.kind === 'stop') {
+      state.phase = PHASE.TERMINATED
+      state.stepApproved = false
+      state.stepGateAt = null
+      state.resolvedAt = Date.now()
+      state.history.push({ kind: 'terminate', by: 'question', step: cur.index, at: Date.now() })
+      await habits.update(learnFromTermination(habits.data)).catch(() => {})
+      return {
+        status: 'stopped',
+        progress: renderProgress(state),
+        hint: '用户选择收工：停止动手，只做收尾汇报（做到哪、留下什么、怎么接）。',
+      }
+    }
+    if (verdict.kind === 'timeout') {
+      return {
+        status: 'awaiting_approval',
+        progress,
+        next,
+        hint: `等授权超时（${Math.round(cfg.approvalTimeoutMs / 1000)}s）。把「第 ${next.index} 步：${clip(cur.text, 60)}，是否继续」写给用户；用户回复「继续」后调用 task_step(action=start)，也可让用户执行 /taskguard next。`,
+      }
+    }
+    return {
+      status: 'awaiting_approval',
+      progress,
+      next,
+      subagent: true,
+      hint: `当前上下文弹不出授权卡（子会话/非交互）。把第 ${next.index} 步写给用户，等明确「继续」后调用 task_step(action=start)。`,
+    }
+  }
+
+  /** 一步收尾之后的统一动作：全做完 / 继续 / 进等授权。 */
+  const afterAdvance = async (exec, key, state, advanced) => {
+    const progress = renderProgress(state)
+    const stats = stepStats(state)
+    if (advanced.finished || !advanced.nextStep) {
+      state.phase = PHASE.APPROVED
+      state.stepApproved = false
+      state.stepGateAt = null
+      return {
+        status: 'all-done',
+        progress,
+        stats,
+        hint: '全部步骤已收尾：向用户汇报成果与验收（acceptance）情况；要改方案或加需求就重新 task_plan。',
+      }
+    }
+
+    const next = { index: advanced.nextStep.index + 1, total: stats.total, text: advanced.nextStep.text }
+
+    if (!cfg.stepGating) {
+      state.phase = PHASE.EXECUTING
+      state.stepApproved = true
+      return {
+        status: 'continuing',
+        progress,
+        stats,
+        next,
+        hint: `stepGating 已关闭：接着做第 ${next.index} 步「${clip(next.text, 60)}」。`,
+      }
+    }
+
+    // 关键：进入「等待授权下一步」，闸门在这一阶段拦所有变更类工具
+    state.phase = PHASE.STEP_AWAITING
+    state.stepApproved = false
+    state.stepGateAt = Date.now()
+    const asked = await requestStep(exec, key, state)
+    return { ...asked, stats }
+  }
+
+  const stepTool = {
+    name: 'task_step',
+    description:
+      '分步执行（dsh-task-guard，1.2.0）：把 task_plan 的 steps 当计划表一步一步干，每步做完要用户授权下一步。'
+      + 'action=progress 看进度条与计划表；complete 标记当前步完成（带 summary）并立刻请示下一步；'
+      + 'start 请求/确认当前步的授权（用户说「继续」时用）；skip 跳过当前步；reset 把计划表退回第 1 步。'
+      + '在「等待授权下一步」阶段，所有变更类工具都会被闸门拒绝，必须先过本工具。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['progress', 'complete', 'start', 'skip', 'reset'],
+          description: 'progress 看进度｜complete 本步做完并请示下一步｜start 请求当前步授权｜skip 跳过当前步｜reset 计划表回到第 1 步',
+        },
+        summary: { type: 'string', description: 'action=complete 时写本步实际做了什么、产出在哪（会记入 progress 与下一步的授权卡）' },
+        note: { type: 'string', description: '备注（可选）' },
+      },
+      required: ['action'],
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          status: { type: 'string', description: 'ok | approved | awaiting_approval | continuing | all-done | stopped | step-done | no-plan | blocked' },
+          progress: { type: 'string' },
+          next: { type: 'object' },
+          stats: { type: 'object' },
+          hint: { type: 'string' },
+        },
+      },
+      render: (_args, value) => renderValue(value),
+    },
+    async execute(args, exec) {
+      const key = agentKey(exec?.agent)
+      const state = store.get(key)
+      const action = typeof args?.action === 'string' ? args.action : 'progress'
+
+      if (action === 'progress') {
+        if (!state.plan) return { status: 'no-plan', hint: '还没有方案：先调用 task_plan 立项并取得准许。' }
+        const { cur } = stepMeta(state)
+        return {
+          status: 'ok',
+          progress: renderProgress(state),
+          stats: stepStats(state),
+          phase: state.phase,
+          current: cur ? { index: cur.index + 1, text: cur.text, status: cur.status } : null,
+          steps: state.steps.map((s) => ({ index: s.index + 1, text: s.text, status: s.status, summary: s.summary })),
+        }
+      }
+
+      if (!state.plan) return { status: 'no-plan', hint: '还没有方案：先调用 task_plan 立项并取得准许。' }
+
+      if (state.phase === PHASE.TERMINATED) {
+        return { status: 'blocked', hint: '任务已终止：要接着做先 task_instruction(kind=resume)，要换事就重新 task_plan。' }
+      }
+
+      if (action === 'reset') {
+        state.steps = initSteps(state.plan)
+        state.stepIndex = 0
+        state.stepApproved = state.steps.length > 0
+        state.stepGateAt = null
+        state.phase = PHASE.APPROVED
+        state.history.push({ kind: 'step-reset', planId: state.planId, at: Date.now() })
+        return { status: 'ok', progress: renderProgress(state), stats: stepStats(state), hint: '计划表已回到第 1 步（第一步视为已授权）。' }
+      }
+
+      if (!cfg.stepGating) {
+        // 关掉分步授权时，complete 只做记账
+        const cur0 = currentStep(state)
+        if (action === 'complete' && cur0) {
+          const advanced = advanceStep(state, STEP_STATUS.DONE, args?.summary)
+          state.stepApproved = !advanced.finished
+          return afterAdvance(exec, key, state, advanced)
+        }
+        return { status: 'continuing', progress: renderProgress(state), stats: stepStats(state), hint: 'stepGating=false：按计划自由推进。' }
+      }
+
+      if (action === 'complete') {
+        const cur = currentStep(state)
+        if (!cur) {
+          return { status: 'all-done', progress: renderProgress(state), stats: stepStats(state), hint: '没有剩余步骤了。' }
+        }
+        const advanced = advanceStep(state, STEP_STATUS.DONE, args?.summary)
+        state.history.push({ kind: 'step-done', step: cur.index, summary: clip(args?.summary ?? '', 200), at: Date.now() })
+        log('info', `第 ${cur.index + 1} 步完成：${clip(cur.text, 50)}`)
+        const result = await afterAdvance(exec, key, state, advanced)
+        return { status: result.status === 'approved' ? 'approved' : result.status, ...result }
+      }
+
+      if (action === 'skip') {
+        const cur = currentStep(state)
+        if (!cur) return { status: 'all-done', progress: renderProgress(state), hint: '没有可跳过的步骤。' }
+        advanceStep(state, STEP_STATUS.SKIPPED, args?.summary ?? args?.note ?? '跳过')
+        state.history.push({ kind: 'step-skip', step: cur.index, at: Date.now() })
+        // 跳过之后不再连环弹卡：交由模型向用户请示
+        state.phase = cfg.stepGating ? PHASE.STEP_AWAITING : PHASE.EXECUTING
+        state.stepApproved = !cfg.stepGating
+        state.stepGateAt = Date.now()
+        const nxt = currentStep(state)
+        return {
+          status: 'awaiting_approval',
+          progress: renderProgress(state),
+          stats: stepStats(state),
+          next: nxt ? { index: nxt.index + 1, total: state.steps.length, text: nxt.text } : null,
+          hint: nxt
+            ? `已跳过第 ${cur.index + 1} 步。下一步是第 ${nxt.index + 1} 步「${clip(nxt.text, 60)}」：得到用户准许后 task_step(action=start)。`
+            : '已跳过最后一步：全部步骤收尾，向用户汇报。',
+        }
+      }
+
+      // start / 授权确认
+      const cur = currentStep(state)
+      if (!cur) {
+        return { status: 'all-done', progress: renderProgress(state), stats: stepStats(state), hint: '没有剩余步骤：向用户汇报成果。' }
+      }
+      if (state.phase === PHASE.EXECUTING && state.stepApproved) {
+        return {
+          status: 'continuing',
+          progress: renderProgress(state),
+          stats: stepStats(state),
+          next: { index: cur.index + 1, total: state.steps.length, text: cur.text },
+          hint: `第 ${cur.index + 1} 步已授权：直接做这一步，做完调用 task_step(action=complete)。`,
+        }
+      }
+      return { ...(await requestStep(exec, key, state)), stats: stepStats(state) }
     },
   }
 
@@ -678,6 +1018,8 @@ export function apply(root, rawConfig) {
         state.pendingInstruction = false
         state.resolvedAt = null
         state.actionCount = 0
+        // resume 不重排计划表：接着当前这一步继续（若正在等授权，则回到等授权）
+        state.stepApproved = state.steps.length > 0 && currentStep(state) !== null
         if (!state.boundaries) {
           state.boundaries = mergeBoundaries(
             cfg,
@@ -696,17 +1038,20 @@ export function apply(root, rawConfig) {
       }
 
       if (info.kind === 'append') {
-        if (state.phase !== PHASE.APPROVED && state.phase !== PHASE.EXECUTING) {
+        const inTask = state.phase === PHASE.APPROVED || state.phase === PHASE.EXECUTING || state.phase === PHASE.STEP_AWAITING
+        if (!inTask) {
           state.pendingInstruction = false
           return { status: 'needs_plan', hint: '当前没有已准许的任务：把追加内容并进一次新的 task_plan。' }
         }
         const items = info.additions.length > 0 ? info.additions : [info.instruction].filter(Boolean)
         state.additions.push(...items)
-        state.phase = PHASE.EXECUTING
+        // 在等授权下一步时追加：把新要求挂在当前步之后，阶段不变（仍等那一步的授权）
+        if (state.phase !== PHASE.STEP_AWAITING) state.phase = PHASE.EXECUTING
         state.pendingInstruction = false
         return {
           status: 'continuing',
           additions: state.additions,
+          progress: renderProgress(state),
           hint: '继续原任务：把追加项接在当前步骤之后，不需要重新立项，也不要重述整份方案。',
         }
       }
@@ -719,6 +1064,10 @@ export function apply(root, rawConfig) {
         state.pendingInstruction = false
         state.phase = PHASE.IDLE
         state.actionCount = 0
+        state.steps = []
+        state.stepIndex = 0
+        state.stepApproved = false
+        state.stepGateAt = null
         return { status: 'needs_plan', hint: '新任务：先调用 task_plan 立项并取得准许。' }
       }
 
@@ -735,7 +1084,7 @@ export function apply(root, rawConfig) {
       type: 'object',
       additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['show', 'reset', 'habits', 'habits-reset', 'boundaries', 'help'], description: 'show 默认｜reset 清空本会话状态｜habits 习惯库｜habits-reset 清空习惯库｜boundaries 当前边界｜help 用法' },
+        action: { type: 'string', enum: ['show', 'steps', 'reset', 'habits', 'habits-reset', 'boundaries', 'help'], description: 'show 默认｜steps 计划表进度｜reset 清空本会话状态｜habits 习惯库｜habits-reset 清空习惯库｜boundaries 当前边界｜help 用法' },
       },
     },
     output: {
@@ -756,6 +1105,16 @@ export function apply(root, rawConfig) {
       if (action === 'habits') {
         return { text: renderHabits(habits.data, cfg), habits: habitList(habits.data) }
       }
+      if (action === 'steps') {
+        const state = store.peek(key)
+        const progress = renderProgress(state ?? emptyState(key))
+        return {
+          text: progress || '没有计划表：task_plan 通过后才会展开。',
+          progress,
+          steps: (state?.steps ?? []).map((s) => ({ index: s.index + 1, text: s.text, status: s.status, summary: s.summary })),
+          phase: state?.phase ?? 'idle',
+        }
+      }
       if (action === 'boundaries') {
         const state = store.peek(key)
         const b = state?.boundaries ?? mergeBoundaries(cfg, {}, habitPromotions(habits.data, cfg))
@@ -765,10 +1124,12 @@ export function apply(root, rawConfig) {
         return {
           text: [
             'dsh-task-guard 用法：',
-            '1) 新任务：task_plan(goal, steps, boundaries, acceptance) → 用户准许 → 执行',
-            '2) 任务中来新指令：task_instruction(kind=terminate|append|new_task|question)',
-            '3) 查看/重置：task_guard_status(action=show|reset|habits|habits-reset|boundaries)',
-            '4) 用户可用斜杠命令：/taskguard show|approve|deny|reset|habits|habits reset|boundaries|mode enforce|advisory',
+            '1) 新任务：task_plan(goal, steps, boundaries, acceptance) → 用户准许 → 只做第 1 步',
+            '2) 每步做完：task_step(action=complete, summary=…) → 用户授权下一步 → task_step(action=start)',
+            '3) 看进度：task_step(action=progress) 或 /taskguard step',
+            '4) 任务中来新指令：task_instruction(kind=terminate|append|resume|new_task|question)',
+            '5) 查看/重置：task_guard_status(action=show|steps|reset|habits|habits-reset|boundaries)',
+            '6) 斜杠命令：/taskguard show|step|next|approve|deny|reset|habits|boundaries|mode enforce|advisory',
           ].join('\n'),
         }
       }
@@ -781,7 +1142,7 @@ export function apply(root, rawConfig) {
   }
 
   const registerTools = (ctx) => {
-    for (const definition of [planTool, instructionTool, statusTool]) {
+    for (const definition of [planTool, instructionTool, stepTool, statusTool]) {
       try {
         const disposer = ctx.tools.register(definition)
         if (typeof disposer === 'function') keep(disposer)
@@ -812,8 +1173,11 @@ export function apply(root, rawConfig) {
     '- task_plan 会向用户弹出准许选项：status=approved 才能执行；revise 就先改方案重提；rejected 就停手说明；manual 表示弹不出窗，把方案写给用户等其回复「准许」。',
     '- 不要用自然语言「请允许我…」代替 task_plan —— 闸门只认 task_plan 的结果。',
     '',
-    '### 二、执行',
-    '- 按 steps 推进；超出方案范围的动作要重新 task_plan（planRev+1）并重新取得准许。',
+    '### 二、执行（分步走）',
+    '- 方案里的 steps 就是计划表：一次只做当前这一步，做完立刻 task_step(action=complete, summary=做了什么) 收尾，不要顺手把后面几步一起做完。',
+    '- 当前步做完后阶段变 awaiting_step（等待授权下一步）：此时变更类工具会被拒绝，必须先 task_step(action=start) 向用户请示下一步，拿到「继续」再动手。',
+    '- task_step 的其它动作：progress 看进度条与计划表；skip 跳过当前步；reset 计划表退回第 1 步。',
+    '- 超出方案范围的动作要重新 task_plan（planRev+1）并重新取得准许。',
     '- boundaries 里 forbidden* 的不要碰；allowedSkills 之外的 skill 不要加载；动作预算用满就收尾或重提方案。',
     '- 硬边界（配置里的 hardForbiddenTools / protectedPaths / dangerousCommands）不能被方案放宽。',
     '',
@@ -852,11 +1216,12 @@ export function apply(root, rawConfig) {
             const state = store.peek(key)
             if (!state) return ''
             const head = renderState(state, { disabled: !cfg.enabled, advisory: cfg.mode === 'advisory' })
+            const progress = renderProgress(state)
             const hints = habitHints(habits.data, cfg)
             const tail = hints.length === 0
               ? ''
               : `\n习惯补充：${hints.map((h) => `${h.kind}=${h.value}×${h.weight}`).join('；')}`
-            return `${head}${tail}`
+            return `${head}${progress ? `\n${progress}` : ''}${tail}`
           } catch {
             return ''
           }
@@ -875,8 +1240,8 @@ export function apply(root, rawConfig) {
     try {
       keep(commands.register({
         name: 'taskguard',
-        description: 'dsh-task-guard：show|approve|deny|reset|habits|habits reset|boundaries|mode enforce|advisory',
-        input: { hint: 'show | approve | deny | reset | habits | habits reset | boundaries | mode enforce|advisory' },
+        description: 'dsh-task-guard：show|step|next|approve|deny|reset|habits|habits reset|boundaries|mode enforce|advisory',
+        input: { hint: 'show | step | next | approve | deny | reset | habits | habits reset | boundaries | mode enforce|advisory' },
         handler: (invocation) => {
           try {
             const key = agentKey(invocation?.agent)
@@ -895,6 +1260,31 @@ export function apply(root, rawConfig) {
               state.history.push({ kind: 'approve', by: 'command', at: Date.now() })
               habits.update(learnFromApproval(habits.data, state.plan)).catch(() => {})
               return { kind: 'success', text: `方案#${state.planId ?? '?'} 已准许，闸门放行变更类工具。` }
+            }
+            if (sub === 'step') {
+              const progress = renderProgress(state)
+              const cur = currentStep(state)
+              return {
+                kind: 'success',
+                text: [
+                  progress || '没有计划表：task_plan 通过后才会展开。',
+                  '',
+                  cur ? `当前：第 ${cur.index + 1} 步「${clip(cur.text, 80)}」（${cur.status}）` : '已无剩余步骤',
+                  state.phase === PHASE.STEP_AWAITING ? '下一步等你授权：/taskguard next' : '',
+                ].filter(Boolean).join('\n'),
+              }
+            }
+            if (sub === 'next') {
+              if (!state.plan) return { kind: 'error', text: '还没有方案：先让模型 task_plan。' }
+              const cur = currentStep(state)
+              if (!cur) return { kind: 'error', text: '没有剩余步骤了：本轮可以收尾。' }
+              state.phase = PHASE.EXECUTING
+              state.stepApproved = true
+              state.stepGateAt = null
+              if (cur.status !== STEP_STATUS.ACTIVE) cur.status = STEP_STATUS.ACTIVE
+              if (!cur.startedAt) cur.startedAt = Date.now()
+              state.history.push({ kind: 'step-approve', by: 'command', step: state.stepIndex, at: Date.now() })
+              return { kind: 'success', text: `已授权第 ${cur.index + 1} 步「${clip(cur.text, 60)}」：模型可以动手做这一步了。` }
             }
             if (sub === 'deny') {
               state.phase = PHASE.TERMINATED
@@ -931,7 +1321,7 @@ export function apply(root, rawConfig) {
               text: [
                 renderState(state, { disabled: !cfg.enabled, advisory: cfg.mode === 'advisory' }),
                 '',
-                '命令：/taskguard approve | deny | reset | habits | boundaries | mode enforce|advisory | on | off',
+                '命令：/taskguard step | next | approve | deny | reset | habits | boundaries | mode enforce|advisory | on | off',
               ].join('\n'),
             }
           } catch (error) {

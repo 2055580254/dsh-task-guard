@@ -12,7 +12,7 @@
 
 > 用 plugin_manager install_bundle，target = `https://codeload.github.com/<仓库所有者>/dsh-task-guard/tar.gz/refs/heads/main`
 
-想锁定版本就把 `heads/main` 换成 `tags/v1.1.0`。这与本机已装的 `dsh-purge` 用的是同一种 tarball 规格，不需要预先 clone。
+想锁定版本就把 `heads/main` 换成 `tags/v1.2.0`。这与本机已装的 `dsh-purge` 用的是同一种 tarball 规格，不需要预先 clone。
 
 装完检查返回：
 
@@ -21,7 +21,7 @@
 | `stage` | `enable` |
 | `application` | `applied` |
 | `warnings` | `[]` |
-| `version` | `1.1.0` 或你装的版本 |
+| `version` | `1.2.0` 或你装的版本 |
 
 若 `application=failed` 且 `error.code` 是 `already-installed` → 先卸载再装（见「升级」）。
 若 `kind=build-blocked` 或日志里出现 `ERR_PNPM_IGNORED_BUILDS` → 见文末「装不上怎么办」。
@@ -81,7 +81,7 @@ Windows 例：`E:\src\dsh-task-guard`；macOS/Linux 例：`/opt/src/dsh-task-gua
 新开一个会话，看两处：
 
 1. **系统提示**里出现 `任务闸门协议（dsh-task-guard，强制）` 段落，末尾还有一行动态状态 `[task-guard] 阶段=未立项（idle）`。
-2. **工具清单**里出现 `task_plan`、`task_instruction`、`task_guard_status` 三个工具，以及 `/taskguard` 命令。
+2. **工具清单**里出现 `task_plan`、`task_instruction`、`task_step`、`task_guard_status` 四个工具，以及 `/taskguard` 命令。
 
 再做一个最小验证（应该被拦住，这就是在生效）：
 
