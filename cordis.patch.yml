@@ -21,11 +21,8 @@
         #   gate   = 子代理也要自己立项（拿不到弹窗，等于必须走文字准许）
         #   allow  = 子代理不管（硬边界仍然生效）
         gateSubagents: inherit
-        # 分步执行：方案里的 steps 当计划表，一次只做一步，做完一步再要一次授权
-        stepGating: true
-        #   ask    = 每步做完自动弹「继续下一步 / 跳过这步 / 结束任务」卡（默认）
-        #   manual = 不弹卡，只把下一步写给用户，等其回复「继续」再 task_step(action=start)
-        stepApprovalMode: ask
+        # 分步执行：方案里的 steps 当计划表，模型一步一步做并随时报进度
+        # （1.3.0 起不再逐步索要授权，也就没有 stepGating / stepApprovalMode 了）
         # 计划表最多允许多少步（0=不限）
         maxSteps: 0
         # 准许框体积控制：问句压成一行，完整方案放 detail，避免卡片撑满界面点不到按钮

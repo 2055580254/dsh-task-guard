@@ -3,16 +3,16 @@
 [![CI](https://github.com/2055580254/dsh-task-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/2055580254/dsh-task-guard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![DSH bundle](https://img.shields.io/badge/DSH-host--only%20bundle-blue.svg)](docs/install.md)
-![version](https://img.shields.io/badge/version-1.2.0-informational)
+![version](https://img.shields.io/badge/version-1.3.0-informational)
 
 装在你自己的 DeepSeek Harness 上的一道**任务闸门**。四句话说清它干什么：
 
 1. **先给方案，得到准许才动手**。没走 `task_plan` 并拿到 `approved`，`write / edit / pwsh / job_kill / plugin_manager` 这类变更类工具一律被拒（只读工具不受影响）。
-2. **一步一授权（1.2.0）**。方案里的 `steps` 会变成计划表，一次只做当前这一步；做完调 `task_step(action=complete)` 收尾，插件立刻弹「继续下一步 / 跳过这步 / 结束任务」的卡，你点了它才动下一步。`task_step(action=progress)` 随时看进度条、已完成的每步摘要。
+2. **计划表 + progress（1.3.0）**。方案里的 `steps` 会变成计划表，一次只做当前这一步；做完调 `task_step(action=complete)` 记账并自动前进到下一步。进度条会自动注入上下文，也可以随时 `task_step(action=progress)` 或 `/taskguard step` 看全表与每步摘要。**不再每一步弹卡要授权。**
 3. **动手前先划边界**。全局硬边界（受保护路径、危险命令、硬禁工具）+ 本次任务的允许 skill / 允许工具 / 禁路径 / 动作预算，四层叠加，方案只能收紧不能放宽；你的使用习惯会被记进习惯库，重复出现后自动并入边界。
 4. **任务中来了新指令，先判定再动手**。是「终止」就当场收尾；是「追加」就接着原任务干，不必重新立项。判定之前变更类工具被拦住。
 
-一句话工作流：**探查（只读自由）→ `task_plan` → 用户点准许 → 只做第 1 步 → `task_step(complete)` → 用户授权 → 第 2 步 …… → 新消息先 `task_instruction`**。
+一句话工作流：**探查（只读自由）→ `task_plan` → 用户点准许 → 第 1 步 → `task_step(complete)` → 第 2 步 → …… → 全部收尾 → 汇报；新消息先 `task_instruction`**。
 
 **装它**（Host-only bundle，无第三方依赖、无需构建）：
 
@@ -22,7 +22,19 @@ plugin_manager install_bundle，target = https://codeload.github.com/2055580254/
 
 装完看 `application=applied` 且 `warnings` 为空，重启 DSH。细节与另外两条安装通道见 [docs/install.md](docs/install.md)；开发与发布流程见 [docs/publish.md](docs/publish.md)。
 
-## v1.2.0 改了什么：分步执行 + progress + 每步授权
+## v1.3.0 改了什么：只留计划表 + progress，去掉「每步再授权」
+
+v1.2.0 引入的分步授权（做完一步弹一次卡）在实际使用里太吵：长任务要连点十几次，还会被卡片挡住界面。1.3.0 按用户要求把它拆掉，只保留有用的部分：
+
+- **计划表**：方案里的 `steps` 获准后展开成 `state.steps[]`，模型一次只做当前步，进度条计入每步的 `summary`。
+- **progress**：`进度 3/6 ░░░░░░░░░░`（含 ✅/⏭/▶ 标记）自动注入上下文；`task_step(action=progress)` 与 `/taskguard step` 随时看全表。
+- **complete 直接推进**：`task_step(action=complete, summary=…)` 记账并前进到下一步，阶段保持 `executing`，不弹卡、不等授权；全部收尾返回 `all-done`。
+- **删掉的东西**：`awaiting_step` 阶段、`step-approval` 闸门、`stepApproved` / `stepGateAt`、两张分步授权卡与文字「继续」降级、`/taskguard next`、`stepGating` / `stepApprovalMode` 配置。
+- 想收紧总量用 `maxActionsPerTask`（动作预算），而不是逐步骤卡人。
+
+## v1.2.0 改了什么：分步执行（历史，1.3.0 已简化）
+
+> 下面这套「每步授权」已在 1.3.0 删除，仅留作版本沿革记录。
 
 以前拿到准许就像开了总闸，模型可以一口气把六步全干完。现在方案里的 `steps` 是可跟踪的计划表：
 
@@ -63,7 +75,7 @@ plugin_manager install_bundle，target = https://codeload.github.com/2055580254/
 
 > 用 plugin_manager install_bundle，target = `https://codeload.github.com/2055580254/dsh-task-guard/tar.gz/refs/heads/main`
 
-想锁定版本就把 `heads/main` 换成 `tags/v1.2.0`。
+想锁定版本就把 `heads/main` 换成 `tags/v1.3.0`。
 
 **通道 2：clone 后装本地目录（要改代码、要看源码选这个）**
 
@@ -120,29 +132,26 @@ node --check index.js            # 期望：无输出
 
 你还可以在选项里写自定义文字，比如「步骤 2 换成先备份」，同样算「修改方案」。
 
-### 2.2 一步一授权怎么走（1.2.0）
+### 2.2 计划表与 progress 怎么走（1.3.0）
 
-准许之后不是「全放行」，而是**只放行当前这一步**：
+准许之后是「按计划表一路做完」，中间不再要授权：
 
 ```
 你：把这套文档补齐
 DSH：task_plan(3 步) → 你点「准许执行」
-DSH：（只做第 1 步：读现有文档）
-DSH：task_step(complete, summary="读完 4 个文档，缺配置表和排错") 
-     ↓ 插件自动弹第二张卡
-     [下一步授权] 第 2/3 步｜补齐配置表
-       [继续下一步]  [跳过这步]  [结束任务]
-你：点「继续下一步」
-DSH：（只做第 2 步）→ task_step(complete) → 弹第 3 步的卡 ……
+DSH：（第 1 步：读现有文档）→ task_step(complete, summary="读完 4 个文档，缺配置表和排错")
+DSH：（第 2 步：补齐配置表）  → task_step(complete, summary="补了 12 个字段")
+DSH：（第 3 步：写故障排查）  → task_step(complete, summary="6 条常见拦截")
+DSH：汇报成果与验收情况
 ```
 
 - **进度随时可看**：`task_step(action=progress)` 或 `/taskguard step`，输出像
-  `进度 2/3 ▓▓▓▓▓▓▓░░░` ＋ `✅ 1. 读现有文档 — 读完 4 个文档` ＋ `▶ 3. 写故障排查`。
-  系统提示里也会自动注入这一行，模型不会忘。
-- **等待期是硬拦**：阶段是 `awaiting_step` 时，`write / edit / pwsh / plugin_manager` 全部被拒（只读工具照常），理由写着 `step-approval`。
-- **弹不出卡也能授权**：子会话/非交互场景，你回一句「继续」「下一步」即视为授权（`task_step(action=start)` 会记录）。
-- **想一口气干完**：给配置加 `stepGating: false`，退回 1.1.0 的自由推进，progress 仍然记录。
-- **跳过**：点「跳过这步」或 `task_step(action=skip)`；跳过不会连环弹卡，只会把下一步写给你。
+  `进度 2/3 ░░░░░░░░░░` ＋ `✅ 1. 读现有文档 — 读完 4 个文档` ＋ `▶ 3. 写故障排查`。
+  每轮还会自动注入一行 `进度 2/3｜当前第 3 步「写故障排查」`，模型不会跳步也不会重复做。
+- **不再逐步骤卡**：一步一 `complete`，阶段一直是 `executing`。想收紧总量就用 `maxActionsPerTask`（动作预算），预算用尽时闸门才会拦。
+- **跳过**：`task_step(action=skip)` 把当前步标成 `skipped` 并前进，进度条用 `⏭` 标记。
+- **重置**：`task_step(action=reset)` 让计划表回到第 1 步（不重新立项）。
+- **历史**：1.2.0 的「每步再授权」与 `stepGating` / `stepApprovalMode` / `/taskguard next` 已在 1.3.0 删除。
 
 ### 2.3 任务进行中又发了消息
 
@@ -164,7 +173,6 @@ DSH：（只做第 2 步）→ task_step(complete) → 弹第 3 步的卡 ……
 ```
 /taskguard             # 等同 show：当前阶段、方案、边界、预算消耗
 /taskguard step        # 计划表进度（进度条 + 每步状态与摘要）
-/taskguard next        # 授权当前这一步（弹卡点不到/超时时的救命路径）
 /taskguard approve     # 手动准许整份方案（弹窗失败时的救命路径）
 /taskguard deny        # 否决并终止
 /taskguard reset       # 清空本会话状态，回到 idle
@@ -212,23 +220,22 @@ DSH：（只做第 2 步）→ task_step(complete) → 弹第 3 步的卡 ……
 | `manual` | 弹不出窗（子会话 / 超时 / 非交互） | 把方案要点写给你，等你回「准许」，或你敲 `/taskguard approve` |
 | `invalid` | 方案本身不成立（缺 goal/steps，或想放宽硬边界） | 修好再提交 |
 
-### `task_step` —— 分步执行与进度（1.2.0）
+### `task_step` —— 计划表与进度（1.3.0）
 
 | action | 作用 | 返回 |
 | --- | --- | --- |
 | `progress` | 看计划表 | `progress`（进度条文本）、`stats`（total/done/skipped/settled）、`current`、`steps[]` |
-| `complete` | 当前步做完 | `status=approved`（下一步已获授权）／`awaiting_approval`（弹不出卡，等文字准许）／`all-done` |
-| `start` | 请求或确认当前步授权 | `continuing`（已授权）／`approved`（刚弹卡点了继续）／`awaiting_approval` |
-| `skip` | 跳过当前步 | `awaiting_approval` + 下一步提示 |
+| `complete` | 当前步做完，记账并前进 | `status=step-done`（有下一步）／`all-done`（全部收尾） |
+| `skip` | 跳过当前步 | `step-done` / `all-done` + 下一步提示 |
 | `reset` | 计划表退回第 1 步 | `ok` |
 
-`complete` 必须带 `summary`（本步实际做了什么、产出在哪），它会进 progress 面板和下一张授权卡的详情，也是你回看「这步到底做成了没有」的依据。
+`complete` 必须带 `summary`（本步实际做了什么、产出在哪），它会进 progress 面板，也是你回看「这步到底做成了没有」的依据。1.3.0 起 `complete` 不再触发授权卡，也不再需要 `start`。
 
 ### `task_instruction` —— 判定新指令
 
 ```jsonc
 {
-  "kind": "append",                  // terminate | append | new_task | question
+  "kind": "append",                  // terminate | append | resume | new_task | question
   "instruction": "用户原话要点（数字/路径/命令照抄）",
   "additions": ["追加项一"],          // kind=append 时填
   "reason": "为什么这么判"

@@ -9,13 +9,12 @@
                      │  ② 阶段 idle？   → 忽略                       │
                      │  ③ 终止措辞？    → phase=TERMINATED（硬保证）  │
                      │  ④ AWAITING+准许？→ phase=APPROVED（降级路径） │
-                     │  ④b STEP_AWAITING+准许？→ 授权当前步          │
                      │  ⑤ 其它          → pendingInstruction=true    │
                      └──────────────────────────────────────────────┘
                                      │
  模型要调工具 ──────► ┌──────────────────────────────────────────────┐
                      │ tools/pre-execute（waterfall）                │
-                     │  decideGate() 按 16 条顺序判定                │
+                     │  decideGate() 按 15 条顺序判定                │
                      │  deny → 附 TASK_GUARD_* 代码，模型看到原因     │
                      │  allow → 计数、APPROVED→EXECUTING，next()      │
                      │  异常 → next()（闸门坏了不能废掉工具）          │
@@ -35,40 +34,32 @@
 - **弹窗**：`userQuestions.ask` 三选项（准许/修改/取消），带 `approvalTimeoutMs` 超时与 `exec.signal` 中断。`ask` 要求「exact live runtime root」——子会话抛 `DELEGATED_CALLER`、非交互抛 `CALLER_NOT_LIVE`，两种情况都降级成 `status=manual` 而不是失败。
 - **为什么不用 `ctx.tools.guard`**：guard 是同步的、只能无条件拒；这里需要读会话状态、要异步问人、要给模型可执行提示，所以用 pre-execute 的 waterfall 返回 `deny`。
 
-## 需求 1b：分步执行与每步授权（v1.2.0）
+## 需求 1b：计划表与 progress（v1.2.0 引入，v1.3.0 简化）
 
-方案获准不再是「全放行」，而是把 `plan.steps` 摊成计划表，一次只放行一步。
+把 `plan.steps` 摊成计划表，模型一次只做一步并随时报进度。v1.2.0 曾在这一层加「每步再授权」，v1.3.0 按用户要求删掉，只留计划表 + progress。
 
 ```
 task_plan approved
-   └─ initSteps(plan)   steps[0]=ACTIVE，stepApproved=true（第一步随准许一起授权）
+   └─ initSteps(plan)   steps[0]=ACTIVE，其余 PENDING
         │
-        ├─ 模型做第 1 步（变更类工具在 EXECUTING 下放行）
+        ├─ 模型做当前步（EXECUTING 下变更类工具照常放行）
         │
         ├─ task_step(complete, summary)
-        │     └─ advanceStep(state, DONE)  → 当前步 DONE+summary，stepIndex++，
-        │                                    下一步 ACTIVE，stepApproved=false
+        │     └─ advanceStep(DONE) → 当前步 DONE + summary + doneAt，stepIndex++，下一步 ACTIVE
         │     └─ 还有下一步？
         │          ├─ 否 → phase=APPROVED，status=all-done
-        │          └─ 是 → phase=STEP_AWAITING（闸门从此拒变更类工具）
-        │                └─ stepApprovalMode=ask → 弹卡
-        │                      [继续下一步] → stepApproved=true, phase=EXECUTING
-        │                      [跳过这步]   → advanceStep(SKIPPED) → 再请示
-        │                      [结束任务]   → phase=TERMINATED
-        │                └─ stepApprovalMode=manual → 只返回 hint，等文字「继续」
+        │          └─ 是 → phase=EXECUTING，status=step-done，hint 指明下一步
         │
-        └─ 文字降级：STEP_AWAITING + looksLikeApproval → stepApproved=true
+        └─ 想跳步 → task_step(skip)：同样推进，只是计 skipped 不计 done
 ```
 
 关键实现约束：
 
-1. **`task_step` 必须在 `PROTOCOL_TOOLS` 里**。`STEP_AWAITING` 阶段除协议工具与只读工具外全拒，`task_step` 漏出去就是自锁（模型没工具能解锁，只能靠用户 `/taskguard next`）。
-2. **`decideGate` 的 `no-approval` 必须显式豁免 `STEP_AWAITING`**。它字面上「不是 APPROVED/EXECUTING」，但语义上是「已立项已准许、下一步未授权」——不豁免就会报 `no-approval`（提示「尚未立项」），误导模型去重新立项。
-3. **分步闸门排在 `no-approval` 之后、`boundaryVerdict` 之前**：先把「有没有资格动手」问清，再问「动了合不合边界」。
-4. **`advanceStep` 一定要清 `stepApproved`**——这是「每步都要再点一次」的机制点，漏了就等于自动放行。
-5. **答复回灌**：弹卡期间 `store.asking` 置位、答复后写 `answeredAt`，`inbox/inserted` 在 `answerGraceMs` 内忽略——否则点「继续下一步」这句话会被当成一条新用户指令，触发 `pendingInstruction`。
-6. **`skip` 不连环弹卡**：跳过之后只把下一步写进 `hint`，由模型向用户请示，避免用户点「跳过」时被连着弹五张卡。
-7. **`append` 接受 `STEP_AWAITING`**：在等授权时提追加要求，是「接在当前步之后」，不是「重新立项」。
+1. **`task_step` 必须在 `PROTOCOL_TOOLS` 里**：它是计划表的唯一写入口。
+2. **`advanceStep` 是唯一推进点**：`complete` / `skip` / `/taskguard step` 共享它，保证 `stepIndex`、`status`、`doneAt`、`summary` 一处更新。
+3. **进度不能只靠模型主动查**：`systemPrompt.context(order 900)` 每轮拼 `renderProgress(state)`，否则模型做完一步就忘，进度条形同虚设。
+4. **1.3.0 删除项**：`PHASE.STEP_AWAITING`、`decideGate` 的 3b) 分步闸门（code `step-approval`）、`no-approval` 对它的豁免、`state.stepApproved` / `stepGateAt`、`askStep` / `requestStep` 两张授权卡、`inbox/inserted` 的文字授权降级、`/taskguard next`、`stepGating` / `stepApprovalMode`。
+5. **别把它做回闸门**：用户要的是「看得见进度」，不是「每一步点一次」。要收紧总量用 `maxActionsPerTask`。
 
 ## 需求 2：边界与 skill 限制
 

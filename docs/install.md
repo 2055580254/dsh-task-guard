@@ -12,7 +12,7 @@
 
 > 用 plugin_manager install_bundle，target = `https://codeload.github.com/<仓库所有者>/dsh-task-guard/tar.gz/refs/heads/main`
 
-想锁定版本就把 `heads/main` 换成 `tags/v1.2.0`。这与本机已装的 `dsh-purge` 用的是同一种 tarball 规格，不需要预先 clone。
+想锁定版本就把 `heads/main` 换成 `tags/v1.3.0`。这与本机已装的 `dsh-purge` 用的是同一种 tarball 规格，不需要预先 clone。
 
 装完检查返回：
 
@@ -21,7 +21,7 @@
 | `stage` | `enable` |
 | `application` | `applied` |
 | `warnings` | `[]` |
-| `version` | `1.2.0` 或你装的版本 |
+| `version` | `1.3.0` 或你装的版本 |
 
 若 `application=failed` 且 `error.code` 是 `already-installed` → 先卸载再装（见「升级」）。
 若 `kind=build-blocked` 或日志里出现 `ERR_PNPM_IGNORED_BUILDS` → 见文末「装不上怎么办」。

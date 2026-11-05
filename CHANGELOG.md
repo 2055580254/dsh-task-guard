@@ -2,7 +2,30 @@
 
 遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## 1.2.0 — 2026-11-04
+## 1.3.0 — 2026-11-05
+
+### 变更：去掉「每步再授权」，只留计划表 + progress
+按用户要求：只保留写计划表与 progress，做完一步不再索要授权。
+
+- **删除 `PHASE.STEP_AWAITING`**（`awaiting_step` 阶段）及其 `PHASE_LABEL` 条目。
+- **删除分步闸门**：`decideGate` 的 3b) 分支（deny code `step-approval`）与 `no-approval` 对 `awaiting_step` 的显式豁免一并移除。
+- **删除授权状态**：`state.stepApproved`、`state.stepGateAt`；`advanceStep` 不再清授权标记。
+- **删除两张授权卡**：`askStep` / `requestStep`；`afterAdvance` 改为同步 `(state, advanced)`——`complete` / `skip` 之后直接推进：有下一步就 `phase=executing` 并返回 `step-done` + 下一步提示，没有就 `phase=approved` + `all-done`。
+- **`task_step` 收敛为四个动作**：`progress` / `complete` / `skip` / `reset`（`start` 删除）。
+- **删除文字降级路径**：`agent/inbox/inserted` 里「`awaiting_step` + 准许措辞 → 授权该步」整块移除。
+- **删除 `/taskguard next`**，命令助记、`description`、兜底文本同步更新。
+- **删除配置** `stepGating`、`stepApprovalMode`（写了也被忽略）；保留 `maxSteps`。
+- `task_instruction`：`append` 不再接受 `awaiting_step`；`resume` 不再重算 `stepApproved`；`new_task` 清理计划表时不再清授权字段。
+
+### 保留
+- 计划表 `state.steps[]`（`index` / `text` / `status` / `startedAt` / `doneAt` / `summary`）、`stepIndex`、`initSteps`、`currentStep`、`hasNextStep`、`stepStats`、`advanceStep`。
+- `renderProgress(state)`：`进度 2/6 ░░░░░░░░░░` + `✅/⏭/▶` 标记 + 每步摘要，接入 `task_step`、`task_guard_status(action=steps)`、`/taskguard step` 与每轮注入的动态状态 context。
+- `PROTOCOL_TOOLS` 仍含 `task_step`。
+
+### 自测
+- 分步相关断言改写为 1.3.0 语义（无授权态、执行阶段照常放行、`stepGating` / `stepApprovalMode` 已不存在），**46 项全部通过**。
+
+## 1.2.0 — 2026-11-04（历史：本节的分步授权已被 1.3.0 删除）
 
 ### 新增：分步执行（计划表 · progress · 每步授权）
 - 方案里的 `steps` 在获准后展开成**可跟踪的计划表**：`state.steps[]`（每步 `{index, text, status, startedAt, doneAt, summary}`）、`stepIndex`、`stepApproved`。

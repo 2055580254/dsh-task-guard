@@ -490,20 +490,22 @@ test('initSteps：第一步 active，其余 pending', () => {
   assert.deepEqual(initSteps({}), [])
 })
 
-test('advanceStep：收尾一步后游标前移、下一步变 active、授权被清空', () => {
+test('advanceStep：收尾一步后游标前移、下一步变 active（1.3.0 不再有逐步授权）', () => {
   const st = emptyState('t')
   st.plan = { steps: ['一', '二', '三'] }
   st.steps = initSteps(st.plan)
   st.stepIndex = 0
-  st.stepApproved = true
   assert.equal(currentStep(st).text, '一')
   const r = advanceStep(st, STEP_STATUS.DONE, '做完了')
   assert.equal(st.stepIndex, 1)
   assert.equal(st.steps[0].status, STEP_STATUS.DONE)
   assert.equal(st.steps[0].summary, '做完了')
+  assert.ok(st.steps[0].doneAt, '收尾时间要记下来')
   assert.equal(r.nextStep.text, '二')
+  assert.equal(r.finished, false)
   assert.equal(st.steps[1].status, STEP_STATUS.ACTIVE)
-  assert.equal(st.stepApproved, false, '每步都要重新授权')
+  assert.equal('stepApproved' in st, false, '1.3.0 不再有逐步授权字段')
+  assert.equal('stepGateAt' in st, false)
 })
 
 test('advanceStep：最后一步收尾后 finished=true，hasNextStep=false', () => {
@@ -531,7 +533,7 @@ test('advanceStep：skip 不计入 done 但计入 settled', () => {
   assert.equal(stats.settled, 1)
 })
 
-test('renderProgress：进度条 + ✅/⏭/▶ 标记 + 等授权提示', () => {
+test('renderProgress：进度条 + ✅/⏭/▶ 标记，无授权态', () => {
   const st = emptyState('t')
   st.plan = { steps: ['读代码', '改 policy', '改 index'] }
   st.steps = initSteps(st.plan)
@@ -540,60 +542,46 @@ test('renderProgress：进度条 + ✅/⏭/▶ 标记 + 等授权提示', () => 
   assert.match(text, /进度 1\/3/)
   assert.match(text, /✅ 1\. 读代码 — 读完/)
   assert.match(text, /▶ 2\. 改 policy/)
-  st.phase = PHASE.STEP_AWAITING
+  assert.doesNotMatch(text, /等授权/)
+  assert.doesNotMatch(text, /⏸/)
+  advanceStep(st, STEP_STATUS.DONE, '改完')
+  advanceStep(st, STEP_STATUS.DONE, '改完')
   text = renderProgress(st)
-  assert.match(text, /⏸ 等授权：第 2 步/)
+  assert.match(text, /进度 3\/3/)
+  assert.match(text, /全部步骤已收尾/)
   assert.equal(renderProgress(emptyState('t')), '')
 })
 
-test('decideGate：awaiting_step 阶段拦变更类工具，放行 task_step 与只读', () => {
+test('decideGate：有计划表时执行阶段照常放行，task_step 走协议工具', () => {
   const cfg = normalizeConfig()
   const st = emptyState('t')
-  st.plan = { steps: ['一', '二'] }
+  st.plan = { goal: 'g', steps: ['一', '二'] }
   st.steps = initSteps(st.plan)
   st.stepIndex = 1
-  st.phase = PHASE.STEP_AWAITING
-  const denied = decideGate({ name: 'write', args: { file_path: 'E:\\x.txt', content: 'y' }, state: st, config: cfg })
-  assert.equal(denied.kind, 'deny')
-  assert.equal(denied.code, 'step-approval')
-  assert.match(denied.reason, /第 2 步/)
-  assert.equal(decideGate({ name: 'task_step', args: { action: 'start' }, state: st, config: cfg }).code, 'protocol-tool')
-  assert.equal(decideGate({ name: 'read', args: { file_path: 'E:\\x.txt' }, state: st, config: cfg }).code, 'read-only')
+  st.phase = PHASE.EXECUTING
+  assert.equal(decideGate({ name: 'task_step', args: { action: 'complete' }, state: st, config: cfg }).code, 'protocol-tool')
+  assert.equal(decideGate({ name: 'read', args: { file_path: 'E:/x.txt' }, state: st, config: cfg }).code, 'read-only')
+  const allowed = decideGate({ name: 'write', args: { file_path: 'E:/x.txt', content: 'y' }, state: st, config: cfg })
+  assert.equal(allowed.kind, 'allow', '执行中不该再为下一步索要授权')
 })
 
-test('decideGate：stepGating=false 时 awaiting_step 不再拦', () => {
-  const cfg = normalizeConfig({ stepGating: false })
-  const st = emptyState('t')
-  st.plan = { steps: ['一'] }
-  st.steps = initSteps(st.plan)
-  st.phase = PHASE.STEP_AWAITING
-  assert.equal(decideGate({ name: 'write', args: { file_path: 'E:\\x.txt', content: 'y' }, state: st, config: cfg }).kind, 'allow')
-})
-
-test('配置默认：stepGating=true / stepApprovalMode=ask / maxSteps=0', () => {
+test('配置：只剩 maxSteps，stepGating / stepApprovalMode 已移除', () => {
   const cfg = normalizeConfig()
-  assert.equal(cfg.stepGating, true)
-  assert.equal(cfg.stepApprovalMode, 'ask')
   assert.equal(cfg.maxSteps, 0)
-  assert.equal(normalizeConfig({ stepGating: false }).stepGating, false)
-  assert.equal(normalizeConfig({ stepApprovalMode: 'manual' }).stepApprovalMode, 'manual')
-  assert.equal(normalizeConfig({ stepApprovalMode: '鬼话' }).stepApprovalMode, 'ask')
+  assert.equal(cfg.stepGating, undefined)
+  assert.equal(cfg.stepApprovalMode, undefined)
+  assert.equal(normalizeConfig({ stepGating: true, stepApprovalMode: 'ask' }).stepGating, undefined)
 })
 
-test('renderState：带计划表时输出进度行，等授权时给出 task_step 指引', () => {
+test('renderState：带计划表时输出进度行与当前步，不再提授权', () => {
   const st = emptyState('t')
   st.plan = { goal: 'g', steps: ['一', '二'] }
   st.steps = initSteps(st.plan)
   st.phase = PHASE.EXECUTING
-  st.stepApproved = true
-  let text = renderState(st)
+  const text = renderState(st)
   assert.match(text, /进度 0\/2/)
   assert.match(text, /当前第 1 步/)
-  st.phase = PHASE.STEP_AWAITING
-  st.stepApproved = false
-  text = renderState(st)
-  assert.match(text, /等授权/)
-  assert.match(text, /task_step\(action=start\)/)
+  assert.doesNotMatch(text, /等授权/)
 })
 
 test('task_step 属于协议工具且不在只读清单里（否则等待期能把闸门撑开）', () => {
